@@ -1,0 +1,8 @@
+[package]
+name = "aspecky/profilestore"
+version = "0.3.0"
+description = "loleri's ProfileStore but types dont error with the new Luau type solver"
+authors = ["lm-loleris", "aspecky"]
+registry = "https://github.com/UpliftGames/wally-index"
+license = "Apache-2.0"
+realm = "server"
