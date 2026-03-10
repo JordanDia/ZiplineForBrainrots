@@ -83,17 +83,26 @@ end
 
 -- ────────────────────────────────────────────────────────────────────────────
 
-local BaseService -- resolved in KnitInit
+local BaseService   -- resolved in KnitInit
+local IndexService  -- resolved in KnitInit
 
 local BrainrotService = Knit.CreateService({
 	Name = "BrainrotService",
-	Client = {},
+	Client = {
+		-- Fires (name: string?) to the player — non-nil when they pick up a brainrot,
+		-- nil when it is dropped, converted to a tool, or lost on respawn.
+		BrainrotHeld = Knit.CreateSignal(),
+	},
 
 	_HoveringBrainrots = {} :: { [Player]: { Model: Model, Config: any, Weld: Weld } },
 })
 
+local DataService   -- resolved in KnitInit
+
 function BrainrotService:KnitInit()
-	BaseService = Knit.GetService("BaseService")
+	BaseService  = Knit.GetService("BaseService")
+	IndexService = Knit.GetService("IndexService")
+	DataService  = Knit.GetService("DataService")
 end
 
 -- ────────────────────────────────────────────────────────────────────────────
@@ -101,6 +110,18 @@ end
 -- ────────────────────────────────────────────────────────────────────────────
 
 function BrainrotService:KnitStart()
+	-- Load saved brainrots when a player's profile becomes ready.
+	-- Base is always assigned before the profile finishes loading (async), so
+	-- GetBase is safe to call immediately inside the callback.
+	DataService.ProfileLoaded:Connect(function(player, _profile)
+		local base = BaseService:GetBase(player)
+		if base then
+			task.spawn(function()
+				self:_LoadSavedBrainrots(player, base)
+			end)
+		end
+	end)
+
 	-- Find all Luck* models in Workspace and start an independent spawn loop for each
 	for _, obj in Workspace:GetChildren() do
 		local luck = tonumber(obj.Name:match("^Luck(%d+)$"))
@@ -155,7 +176,6 @@ function BrainrotService:_SpawnBrainrot(platform: BasePart, luck: number)
 			part.Anchored = true
 		end
 	end
-	clone:ScaleTo(0.3)
 	clone.Parent = Workspace
 
 	local halfX = platform.Size.X * 0.4
@@ -375,6 +395,10 @@ function BrainrotService:_StartHovering(player: Player, model: Model, config: an
 	weld.Parent = hrp
 
 	self._HoveringBrainrots[player] = { Model = model, Config = config, Weld = weld }
+	self.Client.BrainrotHeld:Fire(player, config.Name)
+
+	-- Record discovery in the index.
+	IndexService:UnlockBrainrot(player, config.Name)
 
 	local charConn
 	charConn = player.CharacterRemoving:Connect(function()
@@ -389,10 +413,63 @@ function BrainrotService:_ClearHover(player: Player, destroyModel: boolean)
 
 	hoverData.Weld:Destroy()
 	self._HoveringBrainrots[player] = nil
+	self.Client.BrainrotHeld:Fire(player, nil)
 
 	if destroyModel and hoverData.Model and hoverData.Model.Parent then
 		hoverData.Model:Destroy()
 	end
+end
+
+-- Detaches the brainrot from the player and leaves it on the ground.
+function BrainrotService:_DropBrainrot(player: Player)
+	local hoverData = self._HoveringBrainrots[player]
+	if not hoverData then return end
+
+	local model  = hoverData.Model
+	local config = hoverData.Config
+
+	self:_ClearHover(player, false)
+
+	-- Re-anchor at current world position
+	for _, part in model:GetDescendants() do
+		if part:IsA("BasePart") then
+			part.Anchored    = true
+			part.CanCollide  = true
+			part.Massless    = false
+		end
+	end
+
+	-- Re-add a pickup prompt
+	local promptPart = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+	if not promptPart then
+		model:Destroy()
+		return
+	end
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ObjectText          = config.Name
+	prompt.ActionText          = "Collect"
+	prompt.HoldDuration        = 0
+	prompt.RequiresLineOfSight = false
+	prompt.Parent              = promptPart
+
+	local despawnCancelled = false
+	prompt.Triggered:Connect(function(trigPlayer)
+		if self._HoveringBrainrots[trigPlayer] then return end
+		despawnCancelled = true
+		prompt:Destroy()
+		self:_StartHovering(trigPlayer, model, config)
+	end)
+
+	task.delay(DESPAWN_TIME, function()
+		if not despawnCancelled and model and model.Parent then
+			model:Destroy()
+		end
+	end)
+end
+
+function BrainrotService.Client:DropBrainrot(player: Player)
+	self.Server:_DropBrainrot(player)
 end
 
 -- ────────────────────────────────────────────────────────────────────────────
@@ -546,6 +623,16 @@ function BrainrotService.Client:PlaceBrainrot(player: Player, stand: Instance)
 		LastUpdate = os.clock(),
 	}
 
+	-- Persist placement
+	local placedProfile = DataService:GetProfile(player)
+	if placedProfile then
+		placedProfile.Data.PlacedBrainrots[stand.Name] = {
+			Name   = config.Name,
+			Rate   = config.Rate,
+			Rarity = config.Rarity,
+		}
+	end
+
 	-- Pick Up prompt on the placed model
 	local promptPart = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
 	if promptPart then
@@ -563,6 +650,11 @@ function BrainrotService.Client:PlaceBrainrot(player: Player, stand: Instance)
 			stand:SetAttribute("Occupied", false)
 			BaseService:RemoveGenerator(stand)
 
+			local pickupProfile = DataService:GetProfile(trigPlayer)
+			if pickupProfile then
+				pickupProfile.Data.PlacedBrainrots[stand.Name] = nil
+			end
+
 			model.Parent = Workspace
 			local pickupTool = self.Server:_MakeToolFromModel(model, config)
 			pickupTool.Parent = trigPlayer.Backpack
@@ -571,6 +663,117 @@ function BrainrotService.Client:PlaceBrainrot(player: Player, stand: Instance)
 	end
 
 	print(`[BrainrotService] {player.Name} placed {config.Name} on {stand.Name}`)
+end
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Saved-base loader
+-- ────────────────────────────────────────────────────────────────────────────
+
+function BrainrotService:_LoadSavedBrainrots(player: Player, base: Folder)
+	local profile = DataService:GetProfile(player)
+	if not profile then return end
+
+	local placed = profile.Data.PlacedBrainrots
+	if not placed then return end
+
+	for standName, brainrotData in placed do
+		-- Stands are grandchildren of the base (base > standsFolder > stand)
+		local stand = nil
+		for _, folder in base:GetChildren() do
+			local candidate = folder:FindFirstChild(standName)
+			if candidate and candidate:FindFirstChild("Center") then
+				stand = candidate
+				break
+			end
+		end
+		if not stand then
+			warn(`[BrainrotService] Saved stand "{standName}" not found in base for {player.Name}`)
+			continue
+		end
+		if stand:GetAttribute("Occupied") then continue end
+
+		local template = BrainrotsFolder:FindFirstChild(brainrotData.Name)
+		if not template then
+			warn(`[BrainrotService] Saved brainrot model "{brainrotData.Name}" not found`)
+			continue
+		end
+
+		local model = template:Clone()
+		for _, desc in model:GetDescendants() do
+			if desc:IsA("BasePart") then
+				desc.Anchored   = true
+				desc.CanCollide = false
+			end
+			if desc:IsA("WeldConstraint") then
+				desc:Destroy()
+			end
+		end
+
+		local center = stand:FindFirstChild("Center") :: BasePart
+		if not center then
+			model:Destroy()
+			continue
+		end
+
+		local placementPos = center.Position + Vector3.new(0, 3, 0)
+		local earningsDisplay = stand:FindFirstChild("EarningsDisplay") :: BasePart?
+		local placementCF
+		if earningsDisplay then
+			local dir     = earningsDisplay.Position - placementPos
+			local lookDir = Vector3.new(dir.X, 0, dir.Z)
+			if lookDir.Magnitude > 0.1 then
+				placementCF = CFrame.new(placementPos, placementPos + lookDir)
+			else
+				placementCF = CFrame.new(placementPos)
+			end
+		else
+			placementCF = CFrame.new(placementPos)
+		end
+
+		model:PivotTo(placementCF)
+		model.Parent = stand
+		model:SetAttribute("BrainrotName", brainrotData.Name)
+		model:SetAttribute("Rate",         brainrotData.Rate)
+		model:SetAttribute("Rarity",       brainrotData.Rarity)
+
+		stand:SetAttribute("Occupied", true)
+		BaseService.Generators[stand] = {
+			Rate       = brainrotData.Rate,
+			Stored     = 0,
+			LastUpdate = os.clock(),
+		}
+
+		-- Pickup prompt (mirrors PlaceBrainrot)
+		local config     = brainrotData
+		local promptPart = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+		if promptPart then
+			local pickupPrompt = Instance.new("ProximityPrompt")
+			pickupPrompt.ObjectText          = config.Name
+			pickupPrompt.ActionText          = "Pick Up"
+			pickupPrompt.RequiresLineOfSight = false
+			pickupPrompt.Parent              = promptPart
+
+			pickupPrompt.Triggered:Connect(function(trigPlayer)
+				if BaseService:GetBase(trigPlayer) ~= base then return end
+
+				pickupPrompt:Destroy()
+				stand:SetAttribute("Occupied", false)
+				BaseService:RemoveGenerator(stand)
+
+				local p = DataService:GetProfile(trigPlayer)
+				if p then
+					p.Data.PlacedBrainrots[stand.Name] = nil
+				end
+
+				model.Parent = Workspace
+				local pickupTool = self:_MakeToolFromModel(model, config)
+				pickupTool.Parent = trigPlayer.Backpack
+				print(`[BrainrotService] {trigPlayer.Name} picked up (restored) {config.Name}`)
+			end)
+		end
+
+		print(`[BrainrotService] Restored "{brainrotData.Name}" on {standName} for {player.Name}`)
+	end
 end
 
 return BrainrotService

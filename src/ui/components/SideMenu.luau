@@ -45,10 +45,22 @@ local function Button(scope, assetId, label)
 	}
 end
 
-return function(scope, _props)
+local CALLBACKS = {
+	Index   = "OnIndex",
+	Boost   = "OnBoost",
+	Rebirth = "OnRebirth",
+	Shop    = "OnShop",
+}
+
+return function(scope, props)
 	local buttons = {}
 	for _, data in BUTTONS do
-		table.insert(buttons, Button(scope, data.id, data.label))
+		local btn = Button(scope, data.id, data.label)
+		local cbKey = CALLBACKS[data.label]
+		if cbKey and props[cbKey] then
+			btn.Activated:Connect(props[cbKey])
+		end
+		table.insert(buttons, btn)
 	end
 
 	return scope:New "Frame" {

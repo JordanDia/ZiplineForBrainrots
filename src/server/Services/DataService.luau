@@ -17,9 +17,13 @@ DataService.Profiles = {}
 DataService.ProfileLoaded = Signal.new()
 
 local PROFILE_TEMPLATE = {
-	Cash           = 500,
-	ZiplineSpeed    = 20,
-	ZiplineDuration = 5,
+	Cash              = 500,
+	ZiplineSpeed      = 20,
+	ZiplineDuration   = 5,
+	CarryAmount       = 1,
+	Rebirths          = 0,
+	UnlockedBrainrots = {},
+	PlacedBrainrots   = {}, -- { [standName]: { Name, Rate, Rarity } }
 }
 
 local PlayerStore = ProfileStore.New("PlayerStoreTest", PROFILE_TEMPLATE)

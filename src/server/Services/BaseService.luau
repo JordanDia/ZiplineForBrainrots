@@ -1,7 +1,8 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local ServerStorage = game:GetService("ServerStorage")
 
 local Knit = require(ReplicatedStorage.Packages.Knit)
 local Fusion = require(ReplicatedStorage.Packages.Fusion)
@@ -19,31 +20,33 @@ local RARITY_COLORS = {
 }
 
 
-local BasesFolder = Workspace:WaitForChild("Bases")
-
-local CurrencyService
+local BasesFolder = workspace:WaitForChild("Bases")
+local StandVFX    = ServerStorage:WaitForChild("StandVFX")
 
 local BaseService = Knit.CreateService({
 	Name = "BaseService",
-	Client = {},
+	Client = {
+		GeneratorCollected = Knit.CreateSignal()
+	},
 
-	_PlayerBases = {} :: { [Player]: Folder },
-	_BaseOwners  = {} :: { [Folder]: Player },
+	_PlayerBases  = {} :: { [Player]: Folder },
+	_BaseOwners   = {} :: { [Folder]: Player },
+	_LastCollect  = {} :: { [Player]: number }, -- os.clock() of last collection
 
 	-- Populated directly by BrainrotService when a brainrot is placed/removed.
 	-- [stand] -> { Rate, Stored, LastUpdate, DisplayLabel?, CollectConn? }
 	Generators = {} :: { [Instance]: any },
 })
 
-function BaseService:KnitInit()
-	CurrencyService = Knit.GetService("CurrencyService")
-end
-
--- ────────────────────────────────────────────────────────────────────────────
--- Player / base assignment
--- ────────────────────────────────────────────────────────────────────────────
+local CurrencyService
+local RebirthService
+local BoostService
 
 function BaseService:KnitStart()
+	CurrencyService = Knit.GetService("CurrencyService")
+	RebirthService  = Knit.GetService("RebirthService")
+	BoostService    = Knit.GetService("BoostService")
+
 	Players.PlayerAdded:Connect(function(player)
 		self:_AssignBase(player)
 	end)
@@ -100,6 +103,11 @@ function BaseService:_SpawnAtBase(character: Model, base: Folder)
 	if not humanoidRootPart then return end
 
 	humanoidRootPart.CFrame = spawnPart.CFrame + Vector3.new(0, 4, 0)
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.WalkSpeed = 24
+	end
 end
 
 function BaseService:_ReleaseBase(player: Player)
@@ -118,6 +126,17 @@ end
 function BaseService.Client:GetBase(player: Player): string?
 	local base = self.Server:GetBase(player)
 	return if base then base.Name else nil
+end
+
+function BaseService.Client:ReturnToBase(player: Player)
+	local base = self.Server:GetBase(player)
+	if not base then return end
+	local spawnPart = base:FindFirstChild("Spawn") :: BasePart?
+	if not spawnPart then return end
+	if not player.Character then return end
+	local hrp = player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hrp then return end
+	hrp.CFrame = spawnPart.CFrame + Vector3.new(0, 4, 0)
 end
 
 -- ────────────────────────────────────────────────────────────────────────────
@@ -267,6 +286,14 @@ function BaseService:_StartGenerators()
 
 					genData.DisplayLabel = label
 
+					-- Clone all particle emitters from StandVFX into the EarningsDisplay part
+					local vfxInstances = {}
+					for _, vfx in StandVFX:GetChildren() do
+						local clone = vfx:Clone()
+						clone.Parent = earningsDisplay
+						table.insert(vfxInstances, clone)
+					end
+
 					genData.CollectConn = earningsDisplay.Touched:Connect(function(hit)
 						local character = hit.Parent
 						local player = Players:GetPlayerFromCharacter(character)
@@ -275,11 +302,40 @@ function BaseService:_StartGenerators()
 						local baseFolder = stand.Parent and stand.Parent.Parent
 						if not baseFolder or self._BaseOwners[baseFolder] ~= player then return end
 
+						local now = os.clock()
+						if now - (self._LastCollect[player] or 0) < 1 then return end
+						self._LastCollect[player] = now
+
 						local collected = math.floor(genData.Stored)
 						if collected <= 0 then return end
 
 						genData.Stored -= collected
-						CurrencyService:AddCash(player, collected)
+						local mult = RebirthService:GetCashMultiplier(player) * BoostService:GetMultiplier(player)
+						CurrencyService:AddCash(player, math.floor(collected * mult))
+
+						self.Client.GeneratorCollected:Fire(player)
+
+						for _, vfx in vfxInstances do
+							vfx:Emit(vfx:GetAttribute("EmitCount") or 1)
+						end
+
+						-- Button-press effect: press down + flash red, spring back, then green on cooldown end
+						local origPos = earningsDisplay.Position
+						local pressInfo = TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+						TweenService:Create(earningsDisplay, pressInfo, {
+							Position = origPos - Vector3.new(0, 0.19, 0),
+							Color    = BrickColor.new("Bright red").Color,
+						}):Play()
+						task.delay(0.12, function()
+							TweenService:Create(earningsDisplay, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+								Position = origPos,
+							}):Play()
+						end)
+						task.delay(1, function()
+							TweenService:Create(earningsDisplay, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+								Color = BrickColor.new("Bright green").Color,
+							}):Play()
+						end)
 					end)
 
 					print("Setup earnings display")

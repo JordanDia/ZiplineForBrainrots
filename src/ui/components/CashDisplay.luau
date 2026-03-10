@@ -3,10 +3,12 @@ local Fusion = require(ReplicatedStorage.Packages.Fusion)
 local FormatNumber = require(ReplicatedStorage.Packages.FormatNumber).Simple.FormatCompact
 
 -- Props:
---   Cash (Value<number>)
+--   Cash    (Value<number>)
+--   Visible (Value<boolean>?)  optional — defaults to true
 return function(scope, props)
 	return scope:New "TextLabel" {
 		Name = "CashDisplay",
+		Visible = if props.Visible ~= nil then props.Visible else true,
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, 0.15),
 		Size = UDim2.fromScale(0.1, 0.1),

@@ -42,6 +42,13 @@ function CurrencyService:AddCash(player: Player, amount: number)
 	self.CashChanged:Fire(player, data.Cash)
 end
 
+function CurrencyService:SetCash(player: Player, amount: number)
+	local data = DataService:GetData(player)
+	if not data then return end
+	data.Cash = amount
+	self.CashChanged:Fire(player, data.Cash)
+end
+
 -- Returns false if the player can't afford it; true and deducts on success.
 function CurrencyService:RemoveCash(player: Player, amount: number): boolean
 	local data = DataService:GetData(player)

@@ -1,8 +1,9 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
-
+local SoundService = game:GetService("SoundService")
 local Knit = require(ReplicatedStorage.Packages.Knit)
+
+local PopSound = SoundService:WaitForChild("Pop")
 
 local BaseController = Knit.CreateController({ Name = "BaseController" })
 
@@ -20,7 +21,7 @@ function BaseController:KnitStart()
 		return
 	end
 
-	local baseFolder = Workspace:WaitForChild("Bases"):WaitForChild(baseName)
+	local baseFolder = workspace:WaitForChild("Bases"):WaitForChild(baseName)
 	local standsFolder = baseFolder:WaitForChild("Stands")
 
 	local function onCharacterAdded(character: Model)
@@ -40,6 +41,12 @@ function BaseController:KnitStart()
 	local character = player.Character or player.CharacterAdded:Wait()
 	onCharacterAdded(character)
 	player.CharacterAdded:Connect(onCharacterAdded)
+
+
+
+	BaseService.GeneratorCollected:Connect(function()
+		PopSound:Play()
+	end)
 end
 
 function BaseController:_ShowStandPrompts(standsFolder: Folder, tool: Tool, BrainrotService)
